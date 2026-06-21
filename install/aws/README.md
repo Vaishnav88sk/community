@@ -213,8 +213,7 @@ aws docdb create-db-subnet-group \
 
 ### 6.2 Create a DocumentDB Cluster
 
-> [!IMPORTANT]
-> By default, new AWS DocumentDB clusters have TLS enabled. For production environments, it is highly recommended to leave TLS enabled. You will need the AWS RDS CA bundle to connect securely from Microcks.
+**IMPORTANT:** By default, new AWS DocumentDB clusters have TLS enabled. For production environments, it is highly recommended to leave TLS enabled. You will need the AWS RDS CA bundle to connect securely from Microcks.
 
 ```sh
 aws docdb create-db-cluster \
@@ -264,8 +263,7 @@ kubectl create secret generic documentdb-ca-bundle --from-file=global-bundle.pem
 
 DocumentDB doesn't support implicit collection creation when creating indexes. For that we need to init the collections before the Microcks Application is started.
 
-> [!IMPORTANT]
-> AWS DocumentDB clusters are strictly private. The script below **must be executed from an EC2 instance or a Kubernetes Pod** that resides within the same VPC. If connecting with TLS enabled, you will need to append `--tls --tlsCAFile global-bundle.pem` to your mongo connection string.
+**IMPORTANT:** AWS DocumentDB clusters are strictly private. The script below **must be executed from an EC2 instance or a Kubernetes Pod** that resides within the same VPC. If connecting with TLS enabled, you will need to append `--tls --tlsCAFile global-bundle.pem` to your mongo connection string.
 
 Connect to your DocumentDB instance in shell mode and execute the following collection creation : 
 ```sh
