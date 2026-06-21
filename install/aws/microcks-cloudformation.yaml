@@ -1,6 +1,6 @@
 ---
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Deploy Microcks on Amazon EKS with Aurora PostgreSQL and DocumentDB, using Helm via Lambda.
+Description: True 1-Click Deployment of Microcks on Amazon EKS with Aurora PostgreSQL and DocumentDB.
 
 Parameters:
   ClusterName:
@@ -10,7 +10,7 @@ Parameters:
   KubernetesVersion:
     Type: String
     Default: '1.32'
-    Description: Kubernetes version for EKS (e.g., 1.30, 1.31). Verify supported versions with AWS EKS documentation.
+    Description: Kubernetes version for EKS
   NodeInstanceType:
     Type: String
     Default: t3.medium
@@ -19,61 +19,51 @@ Parameters:
   NodeGroupName:
     Type: String
     Default: microcks-nodes
-    Description: Name of the EKS node group
   DesiredCapacity:
     Type: Number
     Default: 2
-    Description: Desired number of nodes
   MinSize:
     Type: Number
     Default: 1
-    Description: Minimum number of nodes
   MaxSize:
     Type: Number
     Default: 3
-    Description: Maximum number of nodes
   SubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
-    Description: Subnet IDs for EKS and Aurora. Must have internet access (public or NAT Gateway) for Lambda.
+    Description: Subnet IDs for EKS and Aurora. Must span at least two Availability Zones.
   DocDBSubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
-    Description: Subnet IDs for DocumentDB
+    Description: Subnet IDs for DocumentDB. Must span at least two Availability Zones.
   AuroraEngineVersion:
     Type: String
     Default: '15.5'
-    Description: Aurora PostgreSQL engine version (e.g., 15.5). Verify with AWS RDS documentation.
   DocDBEngineVersion:
     Type: String
     Default: '5.0'
-    Description: DocumentDB engine version (e.g., 5.0). Verify with AWS DocumentDB documentation.
   VpcSecurityGroupId:
-    Type: String
-    Description: Security group ID for the VPC, allowing 5432 (Aurora), 27017 (DocumentDB), and 80/443 (EKS)
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group ID for the VPC
   AuroraMasterUsername:
     Type: String
     Default: microcks
-    Description: Master username for Aurora PostgreSQL
   AuroraMasterPassword:
     Type: String
-    Default: microcks123
     NoEcho: true
-    Description: Master password for Aurora PostgreSQL
   DocDBMasterUsername:
     Type: String
     Default: microcks
-    Description: Master username for DocumentDB
   DocDBMasterPassword:
     Type: String
-    Default: microcks123
     NoEcho: true
-    Description: Master password for DocumentDB
   MicrocksDomain:
     Type: String
     Default: microcks.example.com
-    Description: Domain for Microcks (e.g., microcks.your-domain.com or microcks.<INGRESS_IP>.nip.io)
+    Description: Domain for Microcks
 
 Resources:
-  # EKS Cluster Role
+  # ---------------------------------------------------------
+  # 1. EKS Infrastructure
+  # ---------------------------------------------------------
   EKSClusterRole:
     Type: AWS::IAM::Role
     Properties:
@@ -87,7 +77,6 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
 
-  # EKS Cluster
   EKSCluster:
     Type: AWS::EKS::Cluster
     Properties:
@@ -99,7 +88,6 @@ Resources:
         SecurityGroupIds:
           - !Ref VpcSecurityGroupId
 
-  # Node Instance Role
   NodeInstanceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -115,7 +103,6 @@ Resources:
         - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
         - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
 
-  # EKS Node Group
   NodeGroup:
     Type: AWS::EKS::Nodegroup
     DependsOn: EKSCluster
@@ -133,14 +120,15 @@ Resources:
       AmiType: AL2_x86_64
       DiskSize: 20
 
-  # Aurora Subnet Group
+  # ---------------------------------------------------------
+  # 2. Database Infrastructure
+  # ---------------------------------------------------------
   MicrocksDBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
       DBSubnetGroupDescription: Subnet group for Microcks Aurora
       SubnetIds: !Ref SubnetIds
 
-  # Aurora PostgreSQL Cluster
   MicrocksDBCluster:
     Type: AWS::RDS::DBCluster
     Properties:
@@ -156,11 +144,9 @@ Resources:
       ServerlessV2ScalingConfiguration:
         MinCapacity: 0.5
         MaxCapacity: 2
-      BackupRetentionPeriod: 7
       EnableHttpEndpoint: true
-      DeletionProtection: true
+      DeletionProtection: false
 
-  # Aurora PostgreSQL Instance
   MicrocksDBInstance:
     Type: AWS::RDS::DBInstance
     Properties:
@@ -169,86 +155,12 @@ Resources:
       Engine: aurora-postgresql
       DBInstanceClass: db.serverless
 
-  # IAM Role for Aurora DB Setup Lambda
-  AuroraDBSetupRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-        - arn:aws:iam::aws:policy/AmazonRDSFullAccess
-        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
-        - arn:aws:iam::aws:policy/AWSLambdaVPCAccessExecutionRole
-
-  # Lambda Function to Create Microcks Database
-  AuroraDBSetupLambda:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: CreateMicrocksDB
-      Handler: index.handler
-      Runtime: python3.9
-      Role: !GetAtt AuroraDBSetupRole.Arn
-      Timeout: 300
-      VpcConfig:
-        SubnetIds: !Ref SubnetIds
-        SecurityGroupIds:
-          - !Ref VpcSecurityGroupId
-      Environment:
-        Variables:
-          DB_HOST: !GetAtt MicrocksDBCluster.Endpoint.Address
-          DB_USER: !Ref AuroraMasterUsername
-          DB_PASS: !Ref AuroraMasterPassword
-      Code:
-        ZipFile: |
-          import psycopg2
-          import os
-          import json
-
-          def handler(event, context):
-              try:
-                  conn = psycopg2.connect(
-                      host=os.environ['DB_HOST'],
-                      port=5432,
-                      user=os.environ['DB_USER'],
-                      password=os.environ['DB_PASS'],
-                      dbname='postgres'
-                  )
-                  conn.autocommit = True
-                  cur = conn.cursor()
-                  cur.execute("SELECT 1 FROM pg_database WHERE datname = 'microcks_db'")
-                  if not cur.fetchone():
-                      cur.execute("CREATE DATABASE microcks_db")
-                      print("Database 'microcks_db' created.")
-                  else:
-                      print("Database 'microcks_db' already exists.")
-                  cur.close()
-                  conn.close()
-                  return {"status": "Success"}
-              except Exception as e:
-                  print(f"Error: {e}")
-                  return {"status": "Failure", "error": str(e)}
-
-  # Trigger for Aurora DB Setup Lambda
-  AuroraDBSetupTrigger:
-    Type: Custom::CreateMicrocksDB
-    DependsOn: MicrocksDBInstance
-    Properties:
-      ServiceToken: !GetAtt AuroraDBSetupLambda.Arn
-
-  # DocumentDB Subnet Group
   MicrocksDocDBSubnetGroup:
     Type: AWS::DocDB::DBSubnetGroup
     Properties:
-      DBSubnetGroupDescription: Subnet group for Microcks DocumentDB
+      DBSubnetGroupDescription: Subnet group for DocumentDB
       SubnetIds: !Ref DocDBSubnetIds
 
-  # DocumentDB Cluster
   MicrocksDocDBCluster:
     Type: AWS::DocDB::DBCluster
     Properties:
@@ -259,9 +171,8 @@ Resources:
       DBSubnetGroupName: !Ref MicrocksDocDBSubnetGroup
       VpcSecurityGroupIds:
         - !Ref VpcSecurityGroupId
-      DeletionProtection: true
+      DeletionProtection: false
 
-  # DocumentDB Instance
   MicrocksDocDBInstance:
     Type: AWS::DocDB::DBInstance
     DependsOn:
@@ -272,8 +183,171 @@ Resources:
       DBClusterIdentifier: !Ref MicrocksDocDBCluster
       DBInstanceClass: db.t3.medium
 
-  # IAM Role for Microcks Deployment Lambda
-  MicrocksDeploymentRole:
+  # ---------------------------------------------------------
+  # 3. 1-Click CodeBuild Deployment
+  # ---------------------------------------------------------
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+        - arn:aws:iam::aws:policy/AmazonVPCFullAccess
+
+  CodeBuildEksAccess:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Ref ClusterName
+      PrincipalArn: !GetAtt CodeBuildRole.Arn
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+          AccessScope:
+            Type: cluster
+
+  DeployMicrocksProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub DeployMicrocks-${AWS::StackName}
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: CLUSTER_NAME
+            Value: !Ref ClusterName
+          - Name: REGION
+            Value: !Ref AWS::Region
+          - Name: MICROCKS_DOMAIN
+            Value: !Ref MicrocksDomain
+          - Name: AURORA_ENDPOINT
+            Value: !GetAtt MicrocksDBCluster.Endpoint.Address
+          - Name: AURORA_USER
+            Value: !Ref AuroraMasterUsername
+          - Name: AURORA_PASS
+            Value: !Ref AuroraMasterPassword
+          - Name: DOCDB_ENDPOINT
+            Value: !GetAtt MicrocksDocDBCluster.Endpoint
+          - Name: DOCDB_USER
+            Value: !Ref DocDBMasterUsername
+          - Name: DOCDB_PASS
+            Value: !Ref DocDBMasterPassword
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: !Sub |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                - curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/1.30.0/2024-05-12/bin/linux/amd64/kubectl
+                - chmod +x ./kubectl
+                - mv ./kubectl /usr/local/bin
+                - curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+                - chmod 700 get_helm.sh
+                - ./get_helm.sh
+            build:
+              commands:
+                - aws eks update-kubeconfig --name $CLUSTER_NAME --region $REGION
+                - kubectl create namespace microcks || true
+                - kubectl create namespace keycloak || true
+                - kubectl create namespace ingress-nginx || true
+                
+                # 1. Initialize DocumentDB from inside the cluster
+                - |
+                  cat <<EOF > init-docdb-job.yaml
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata:
+                    name: init-documentdb
+                    namespace: microcks
+                  spec:
+                    template:
+                      spec:
+                        containers:
+                        - name: mongo
+                          image: mongo:5.0
+                          command: ["/bin/sh", "-c"]
+                          args:
+                            - |
+                              wget https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+                              mongo --host $DOCDB_ENDPOINT --port 27017 -u $DOCDB_USER -p $DOCDB_PASS --tls --tlsCAFile global-bundle.pem --authenticationDatabase admin admin --eval 'db.getSiblingDB("microcks").createCollection("services"); db.getSiblingDB("microcks").createCollection("operations"); db.getSiblingDB("microcks").createCollection("responses"); db.getSiblingDB("microcks").createCollection("requests"); db.getSiblingDB("microcks").createCollection("tests"); db.getSiblingDB("microcks").createCollection("jobs"); db.getSiblingDB("microcks").createCollection("events"); db.getSiblingDB("microcks").createCollection("imports"); db.getSiblingDB("microcks").createCollection("snapshots"); db.getSiblingDB("microcks").createCollection("metadata"); db.getSiblingDB("microcks").createCollection("users"); db.getSiblingDB("microcks").createCollection("roles"); db.getSiblingDB("microcks").createCollection("serviceState");'
+                        restartPolicy: Never
+                  EOF
+                - kubectl apply -f init-docdb-job.yaml
+                - kubectl wait --for=condition=complete job/init-documentdb -n microcks --timeout=300s
+                
+                # 2. Deploy Ingress & Cert-Manager
+                - helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+                - helm repo add jetstack https://charts.jetstack.io
+                - helm repo update
+                - helm install ingress-nginx ingress-nginx/ingress-nginx -n ingress-nginx --set controller.service.type=LoadBalancer
+                - helm install cert-manager jetstack/cert-manager -n cert-manager --create-namespace --set installCRDs=true
+                
+                # 3. Deploy Keycloak
+                - helm repo add bitnami https://charts.bitnami.com/bitnami
+                - |
+                  cat <<EOF > keycloak-values.yaml
+                  externalDatabase:
+                    host: "$AURORA_ENDPOINT"
+                    port: 5432
+                    database: "postgres"
+                    user: "$AURORA_USER"
+                    password: "$AURORA_PASS"
+                  auth:
+                    adminUser: admin
+                    adminPassword: adminpassword
+                  EOF
+                - helm install keycloak bitnami/keycloak -f keycloak-values.yaml -n keycloak
+                
+                # 4. Deploy Microcks
+                - wget https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+                - kubectl create secret generic documentdb-ca-bundle --from-file=global-bundle.pem -n microcks || true
+                - kubectl create secret generic microcks-mongodb-connection -n microcks --from-literal=username=$DOCDB_USER --from-literal=password=$DOCDB_PASS || true
+                - helm repo add microcks https://microcks.io/helm/
+                - |
+                  cat <<EOF > microcks-values.yaml
+                  microcks:
+                    url: microcks.$MICROCKS_DOMAIN
+                    extraVolumeMounts:
+                      - name: documentdb-ca
+                        mountPath: "/certs"
+                        readOnly: true
+                    extraVolumes:
+                      - name: documentdb-ca
+                        secret:
+                          secretName: documentdb-ca-bundle
+                  keycloak:
+                    enabled: true
+                    install: false
+                    url: keycloak.$MICROCKS_DOMAIN
+                    privateUrl: http://keycloak.keycloak.svc.cluster.local:80
+                  mongodb:
+                    install: false
+                    uri: mongodb://$DOCDB_ENDPOINT:27017/microcks
+                    uriParameters: "?authSource=admin&tls=true&tlsCAFile=/certs/global-bundle.pem&replicaSet=rs0&readPreference=secondaryPreferred&retryWrites=false"
+                    database: microcks
+                    secretRef:
+                      secret: microcks-mongodb-connection
+                      usernameKey: username
+                      passwordKey: password
+                  ingress:
+                    enabled: true
+                    ingressClassName: nginx
+                    hostname: microcks.$MICROCKS_DOMAIN
+                    annotations:
+                      nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+                    tls: false
+                  EOF
+                - helm install microcks microcks/microcks -n microcks -f microcks-values.yaml
+
+  TriggerCodeBuildRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -284,191 +358,72 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
-        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
-        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
-        - arn:aws:iam::aws:policy/AmazonRDSReadOnlyAccess
-        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
-        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-        - arn:aws:iam::aws:policy/AWSLambdaVPCAccessExecutionRole
       Policies:
-        - PolicyName: EKSKubeAccess
+        - PolicyName: CodeBuildAccess
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
                 Action:
-                  - eks:DescribeCluster
-                  - eks:AccessKubernetesApi
-                  - eks:UpdateClusterConfig
-                Resource: !Sub arn:aws:eks:${AWS::Region}:${AWS::AccountId}:cluster/${ClusterName}
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: !GetAtt DeployMicrocksProject.Arn
 
-  # Lambda Function to Deploy Microcks
-  MicrocksDeploymentLambda:
+  TriggerCodeBuildLambda:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: DeployMicrocks
       Handler: index.handler
       Runtime: python3.9
       Timeout: 900
-      Role: !GetAtt MicrocksDeploymentRole.Arn
-      VpcConfig:
-        SubnetIds: !Ref SubnetIds
-        SecurityGroupIds:
-          - !Ref VpcSecurityGroupId
+      Role: !GetAtt TriggerCodeBuildRole.Arn
       Environment:
         Variables:
-          CLUSTER_NAME: !Ref ClusterName
-          REGION: !Ref AWS::Region
-          MONGODB_URI: !Sub mongodb://${DocDBMasterUsername}:${DocDBMasterPassword}@${MicrocksDocDBCluster.Endpoint}:27017/microcks
-          MICROCKS_DOMAIN: !Ref MicrocksDomain
+          PROJECT_NAME: !Ref DeployMicrocksProject
       Code:
         ZipFile: |
-          import subprocess
+          import boto3
+          import cfnresponse
+          import time
           import os
-          import json
 
           def handler(event, context):
-              try:
-                  cluster_name = os.environ["CLUSTER_NAME"]
-                  region = os.environ["REGION"]
-                  mongo_uri = os.environ["MONGODB_URI"]
-                  microcks_domain = os.environ["MICROCKS_DOMAIN"]
+              if event['RequestType'] in ['Create', 'Update']:
+                  try:
+                      cb = boto3.client('codebuild')
+                      project_name = os.environ['PROJECT_NAME']
+                      build = cb.start_build(projectName=project_name)
+                      build_id = build['build']['id']
+                      
+                      while True:
+                          time.sleep(10)
+                          status = cb.batch_get_builds(ids=[build_id])['builds'][0]['buildStatus']
+                          if status == 'SUCCEEDED':
+                              cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                              return
+                          elif status in ['FAILED', 'FAULT', 'STOPPED', 'TIMED_OUT']:
+                              cfnresponse.send(event, context, cfnresponse.FAILED, {"Error": f"CodeBuild failed with status {status}"})
+                              return
+                  except Exception as e:
+                      cfnresponse.send(event, context, cfnresponse.FAILED, {"Error": str(e)})
+              else:
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
 
-                  # Update kubeconfig
-                  subprocess.run(["aws", "eks", "update-kubeconfig", "--name", cluster_name, "--region", region], check=True)
-
-                  # Create namespace
-                  subprocess.run(["kubectl", "create", "namespace", "microcks"], check=True, capture_output=True)
-
-                  # Install NGINX Ingress Controller
-                  subprocess.run(["helm", "repo", "add", "ingress-nginx", "https://kubernetes.github.io/ingress-nginx"], check=True)
-                  subprocess.run(["helm", "repo", "update"], check=True)
-                  subprocess.run([
-                      "helm", "install", "ingress-nginx", "ingress-nginx/ingress-nginx",
-                      "--namespace", "ingress-nginx", "--create-namespace",
-                      "--set", "controller.service.type=LoadBalancer",
-                      "--set", "controller.config.proxy-buffer-size=128k"
-                  ], check=True)
-
-                  # Install cert-manager
-                  subprocess.run(["helm", "repo", "add", "jetstack", "https://charts.jetstack.io"], check=True)
-                  subprocess.run(["helm", "repo", "update"], check=True)
-                  subprocess.run([
-                      "helm", "install", "cert-manager", "jetstack/cert-manager",
-                      "--namespace", "cert-manager", "--create-namespace",
-                      "--set", "installCRDs=true"
-                  ], check=True)
-
-                  # Create ClusterIssuer for Let's Encrypt
-                  cluster_issuer = f"""
-                  apiVersion: cert-manager.io/v1
-                  kind: ClusterIssuer
-                  metadata:
-                    name: letsencrypt-prod
-                  spec:
-                    acme:
-                      server: https://acme-v02.api.letsencrypt.org/directory
-                      email: admin@{microcks_domain}
-                      privateKeySecretRef:
-                        name: letsencrypt-prod
-                      solvers:
-                      - http01:
-                          ingress:
-                            class: nginx
-                  """
-                  with open("/tmp/cluster-issuer.yaml", "w") as f:
-                      f.write(cluster_issuer)
-                  subprocess.run(["kubectl", "apply", "-f", "/tmp/cluster-issuer.yaml"], check=True)
-
-                  # Create Kubernetes secret for MongoDB
-                  subprocess.run([
-                      "kubectl", "create", "secret", "generic", "microcks-mongodb-connection",
-                      "-n", "microcks",
-                      "--from-literal=username=microcks",
-                      "--from-literal=password=microcks123"
-                  ], check=True)
-
-                  # Create Microcks Helm values file
-                  microcks_values = f"""
-                  appName: microcks
-                  microcks:
-                    url: https://{microcks_domain}
-                    env:
-                      - name: SPRING_DATA_MONGODB_URI
-                        value: "{mongo_uri}"
-                  keycloak:
-                    enabled: true
-                    install: false
-                    url: https://keycloak.{microcks_domain}
-                    privateUrl: https://keycloak.{microcks_domain}
-                    realm: microcks
-                    client:
-                      id: microcks
-                      secret: dummy-secret
-                  mongodb:
-                    install: false
-                    database: microcks
-                    secretRef:
-                      secret: microcks-mongodb-connection
-                      usernameKey: username
-                      passwordKey: password
-                  ingress:
-                    enabled: true
-                    ingressClassName: nginx
-                    hostname: {microcks_domain}
-                    annotations:
-                      nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
-                      cert-manager.io/cluster-issuer: letsencrypt-prod
-                    tls: true
-                  """
-                  with open("/tmp/microcks.yaml", "w") as f:
-                      f.write(microcks_values)
-
-                  # Install Microcks
-                  subprocess.run(["helm", "repo", "add", "microcks", "https://microcks.io/helm/"], check=True)
-                  subprocess.run(["helm", "repo", "update"], check=True)
-                  subprocess.run([
-                      "helm", "install", "microcks", "microcks/microcks",
-                      "-n", "microcks", "--create-namespace", "-f", "/tmp/microcks.yaml"
-                  ], check=True)
-
-                  # Get Ingress IP
-                  ingress_ip = subprocess.run([
-                      "kubectl", "get", "svc", "-n", "ingress-nginx", "ingress-nginx-controller",
-                      "-o", "jsonpath={.status.loadBalancer.ingress[0].hostname}"
-                  ], capture_output=True, text=True).stdout.strip()
-                  if not ingress_ip:
-                      raise Exception("Ingress IP not available")
-
-                  return {
-                      "status": "Microcks deployed",
-                      "ingress_ip": ingress_ip,
-                      "microcks_url": f"https://{microcks_domain}"
-                  }
-              except Exception as e:
-                  print(f"Error: {e}")
-                  return {"status": "Failure", "error": str(e)}
-
-  # Trigger for Microcks Deployment Lambda
-  MicrocksDeploymentTrigger:
-    Type: Custom::MicrocksDeployment
+  RunDeployment:
+    Type: Custom::RunCodeBuild
     DependsOn:
-      - MicrocksDeploymentLambda
-      - AuroraDBSetupTrigger
       - NodeGroup
       - MicrocksDocDBInstance
+      - MicrocksDBInstance
+      - CodeBuildEksAccess
     Properties:
-      ServiceToken: !GetAtt MicrocksDeploymentLambda.Arn
+      ServiceToken: !GetAtt TriggerCodeBuildLambda.Arn
+      Version: "1.0"
 
 Outputs:
   EKSClusterName:
     Description: Name of the EKS cluster
     Value: !Ref ClusterName
-  EKSClusterEndpoint:
-    Description: Endpoint of the EKS cluster
-    Value: !GetAtt EKSCluster.Endpoint
   AuroraEndpoint:
     Description: Endpoint of the Aurora PostgreSQL cluster
     Value: !GetAtt MicrocksDBCluster.Endpoint.Address
@@ -476,5 +431,5 @@ Outputs:
     Description: Endpoint of the DocumentDB cluster
     Value: !GetAtt MicrocksDocDBCluster.Endpoint
   MicrocksURL:
-    Description: URL to access Microcks
-    Value: !Sub https://${MicrocksDomain}
+    Description: Domain to access Microcks
+    Value: !Sub https://microcks.${MicrocksDomain}
